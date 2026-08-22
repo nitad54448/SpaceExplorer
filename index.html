@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Space Group Explorer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="sheet">
+
+  <section class="finder" aria-labelledby="finderHead">
+    <div class="finder-head">
+      <h1 id="finderHead">Space Group Explorer - 1.1</h1>
+      <div class="finder-tools">
+        <button id="themeToggle" class="btn icon" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">☾</button>
+        <button id="clearFilters" class="btn" type="button">Clear all</button>
+        <button id="printBtn" class="btn" type="button" disabled>Print</button>
+      </div>
+    </div>
+
+    <div class="filter-grid">
+      <div class="filter-group">
+        <div class="filter-label" id="csLabel">Crystal system</div>
+        <div id="crystal" class="toggle-row" role="group" aria-labelledby="csLabel"></div>
+      </div>
+      <div class="filter-group bravais-group">
+        <div class="filter-label" id="blLabel">Bravais lattice</div>
+        <div id="bravais" class="toggle-row" role="group" aria-labelledby="blLabel"></div>
+      </div>
+      <label class="field number-field">Number
+        <input id="number" type="number" inputmode="numeric" min="1" max="230" step="1" placeholder="1–230" autocomplete="off">
+      </label>
+      <label class="field search-field">Search
+        <input id="search" type="search" placeholder="Pbnm, P n m a, Hall…" autocomplete="off">
+      </label>
+    </div>
+
+    <div class="chips" id="activeFilters" aria-live="polite"></div>
+  </section>
+
+  <div class="workspace">
+    <aside class="results" aria-label="Matching settings">
+      <div class="results-head">Settings <span id="resultCount">0</span></div>
+      <div id="resultList" class="result-list"></div>
+    </aside>
+    <section class="detail" id="detail" aria-live="polite">
+      <div class="empty">
+        <p class="empty-mark">◊</p>
+        <h2>No setting selected</h2>
+        <p>Pick a crystal system or lattice, type a number from 1 to 230, or search a symbol.</p>
+      </div>
+    </section>
+  </div>
+
+</main>
+<script src="app.js"></script>
+</body>
+</html>

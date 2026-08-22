@@ -1,0 +1,338 @@
+/* Space Group Explorer — set in the idiom of International Tables Vol. A:
+   a serif text face, hairline rules, no shadows, no fills that are not
+   carrying information, and tables ruled only where a rule means something. */
+
+:root{
+  --paper:#fbfaf7;
+  --sheet:#ffffff;
+  --ink:#12141a;
+  --dim:#5d6067;
+  --faint:#8a8d94;
+  --rule:#b9b6ad;        /* head/foot rules */
+  --hair:#e3e0d8;        /* row hairlines */
+  --mark:#1b3a6b;        /* the one accent: selection and links */
+  --mark-tint:#e9eef7;
+  --absent:#8a1c26;
+  --absent-tint:#f7ecec;
+  --present:#1f5c3a;
+  --present-tint:#eaf2ec;
+
+  --serif:"Charter","Bitstream Charter","Sitka Text",Cambria,"Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  --measure:100%;
+}
+
+*{box-sizing:border-box}
+
+html,body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font:16px/1.5 var(--serif);
+  font-variant-numeric:tabular-nums lining-nums;
+  -webkit-text-size-adjust:100%;
+}
+body{padding:22px 0 64px}
+
+.sheet{max-width:var(--measure);margin:0 auto;padding:0 24px}
+
+h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:.005em}
+p{margin:0}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+
+/* ── Section heads: letterspaced small caps, the book's own device ───── */
+h1,.section-head h3{
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+}
+
+/* ── Controls ────────────────────────────────────────────────────────── */
+.btn{
+  border:1px solid var(--rule);
+  background:var(--sheet);
+  border-radius:2px;
+  padding:5px 10px;
+  font-size:13px;
+  line-height:1.2;
+}
+.btn:hover{background:var(--mark-tint);border-color:var(--mark)}
+.btn.icon{width:30px;padding:5px 0;text-align:center;font-size:14px}
+.btn.on{background:var(--mark-tint);border-color:var(--mark);color:var(--mark)}
+
+:where(a,button,input,[tabindex]):focus-visible{
+  outline:2px solid var(--mark);
+  outline-offset:1px;
+}
+
+/* ── Finder ──────────────────────────────────────────────────────────── */
+.finder{
+  background:var(--sheet);
+  padding:12px 16px 8px;
+  margin-bottom:12px;
+}
+.finder-head{
+  display:flex;justify-content:space-between;align-items:center;gap:16px;
+  padding-bottom:4px;margin-bottom:10px;border-bottom:1px solid var(--hair);
+}
+.finder-tools{display:flex;gap:6px}
+
+.filter-grid{
+  display:grid;
+  grid-template-columns:minmax(330px,2fr) minmax(200px,1.1fr) 82px 164px;
+  gap:14px;align-items:start;
+}
+.filter-label,.field{
+  display:block;
+  font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--dim);
+  margin-bottom:5px;
+}
+.field input{
+  display:block;width:100%;margin-top:5px;
+  min-height:34px;padding:5px 8px;
+  border:1px solid var(--rule);border-radius:2px;background:var(--sheet);
+  font-size:15px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink);
+}
+.field input:focus{outline:2px solid var(--mark);outline-offset:-1px;border-color:var(--mark)}
+.number-field input.invalid{border-color:var(--absent);background:var(--absent-tint)}
+
+.filter-group,.search-field,.number-field{min-width:0}
+.toggle-row{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.toggle{
+  border:1px solid var(--rule);background:var(--sheet);
+  border-radius:2px;padding:5px 9px;font-size:13px;line-height:1.2;
+}
+.toggle:hover:not(:disabled){border-color:var(--mark);background:var(--mark-tint)}
+.toggle.active{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.toggle:disabled{opacity:.32;cursor:default}
+
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px;min-height:19px}
+.chip{
+  font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--mark);border-bottom:1px solid var(--mark);padding-bottom:1px;
+}
+
+/* ── Workspace ───────────────────────────────────────────────────────── */
+.workspace{display:grid;grid-template-columns:272px minmax(0,1fr);gap:26px;align-items:start}
+
+.results{
+  background:var(--sheet);
+  border-top:1px solid var(--ink);
+  position:sticky;top:14px;max-height:calc(100vh - 28px);
+  display:flex;flex-direction:column;
+}
+.results-head{
+  padding:7px 12px;border-bottom:1px solid var(--rule);
+  font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+}
+.results-head span{color:var(--ink)}
+.result-list{overflow:auto}
+
+.result{
+  width:100%;display:block;text-align:left;
+  border:0;border-bottom:1px solid var(--hair);background:none;
+  padding:9px 12px;
+}
+.result:hover{background:var(--mark-tint)}
+.result.active{background:var(--mark-tint);box-shadow:inset 3px 0 var(--mark)}
+.result-symbol{font-size:17px;line-height:1.25}
+.result-meta{color:var(--dim);font-size:12px;margin-top:2px}
+
+/* ── The setting page: modelled on an ITC page head ──────────────────── */
+.detail{min-width:0}
+
+.page-head{
+  background:var(--sheet);
+  border-top:2px solid var(--ink);border-bottom:1px solid var(--ink);
+  padding:12px 16px 0;
+}
+.head-row{
+  display:flex;justify-content:space-between;align-items:baseline;gap:20px;
+  padding-bottom:8px;
+}
+.head-symbol{font-size:36px;line-height:1.05;letter-spacing:.01em}
+.head-symbol sub{font-size:.55em;line-height:0}
+.head-class{text-align:right;color:var(--dim);font-size:13px;white-space:nowrap}
+.head-class b{display:block;color:var(--ink);font-size:17px;font-weight:400}
+
+.head-line{
+  display:flex;flex-wrap:wrap;gap:0 18px;
+  border-top:1px solid var(--hair);padding:6px 0;
+  font-size:13px;color:var(--dim);
+}
+.head-line b{font-weight:400;color:var(--ink)}
+.head-line .hall{font-family:var(--mono);font-size:12px}
+
+/* ── Tabs: a rule with letterspaced labels sitting on it ─────────────── */
+.tabs{display:flex;gap:22px;border-top:1px solid var(--rule);margin-top:2px}
+.tab{
+  border:0;background:none;padding:8px 0 7px;margin-bottom:-1px;
+  font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--faint);border-bottom:2px solid transparent;
+}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--ink);border-bottom-color:var(--ink)}
+
+/* ── Blocks ──────────────────────────────────────────────────────────── */
+.block{background:var(--sheet);border-bottom:1px solid var(--hair);padding:16px}
+.section-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;margin-bottom:10px}
+.section-head h3{color:var(--dim)}
+.section-head .hint{font-size:12px;color:var(--faint)}
+
+/* ── Tables: booktabs. Rule above the head, under the head, at the foot. */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:15px}
+thead th{
+  font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--dim);text-align:left;
+  padding:5px 12px 5px 0;
+  border-top:1px solid var(--ink);border-bottom:1px solid var(--rule);
+  white-space:nowrap;
+}
+tbody td{padding:6px 12px 6px 0;border-bottom:1px solid var(--hair);vertical-align:baseline}
+tbody tr:last-child td{border-bottom:1px solid var(--rule)}
+th:last-child,td:last-child{padding-right:0}
+.num{text-align:right;padding-right:16px!important;width:1%}
+.click-row{cursor:pointer}
+.click-row:hover td{background:var(--mark-tint)}
+tr.selected td{background:var(--mark-tint)}
+tr.selected td:first-child{box-shadow:inset 3px 0 var(--mark)}
+
+.wy-letter{font-style:italic;font-size:17px}
+.sitesym{font-family:var(--serif)}
+.coords{line-height:1.7}
+
+/* ── Crystallographic typesetting: the point of the whole exercise ───── */
+.ovl{text-decoration:overline;text-decoration-thickness:from-font}
+.coord i,.coords i{font-style:italic}
+.csep{color:var(--faint)}
+.ext{color:var(--dim);font-size:.72em;letter-spacing:.04em}
+.rule-str{font-family:var(--serif);white-space:nowrap}
+.zone{font-style:italic}
+
+/* ── Positions inspector ─────────────────────────────────────────────── */
+.inspector{display:grid;grid-template-columns:220px minmax(0,1fr);gap:24px}
+.pos-mark{font-size:30px;line-height:1.1;margin-bottom:8px}
+.pos-mark i{font-style:italic}
+dl.facts{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;margin:0;font-size:14px}
+dl.facts dt{color:var(--dim);font-size:10px;letter-spacing:.11em;text-transform:uppercase;padding-top:4px}
+dl.facts dd{margin:0}
+.coord-list{
+  columns:220px;column-gap:26px;font-size:15px;line-height:1.85;
+}
+.coord-list .n{color:var(--faint);font-size:11px;margin-right:5px}
+.note{color:var(--dim);font-size:13px;margin-top:12px;padding-left:11px;border-left:2px solid var(--hair)}
+
+/* ── Reflection conditions ───────────────────────────────────────────── */
+.cond-table td:first-child{width:1%;white-space:nowrap;padding-right:22px}
+.hkl-entry{display:flex;gap:6px;align-items:center}
+.hkl-entry input{
+  width:56px;min-height:32px;text-align:center;
+  border:1px solid var(--rule);border-radius:2px;background:var(--sheet);
+  font-size:15px;font-style:italic;
+}
+.hkl-entry input:focus{outline:2px solid var(--mark);outline-offset:-1px}
+.verdict{display:flex;gap:16px;align-items:baseline;padding:11px 13px;border:1px solid var(--hair);margin-bottom:12px}
+.verdict.absent{background:var(--absent-tint);border-color:#e2c9cb}
+.verdict.allowed{background:var(--present-tint);border-color:#c8dbcf}
+.verdict-word{font-size:15px;font-weight:700;letter-spacing:.15em;text-transform:uppercase}
+.absent .verdict-word{color:var(--absent)}
+.allowed .verdict-word{color:var(--present)}
+.verdict p{color:var(--dim);font-size:13px;margin-top:2px}
+.checks{font-size:14px}
+.checks td:first-child{width:1%;padding-right:10px}
+.checks .no{color:var(--absent)}
+.checks .yes{color:var(--present)}
+
+/* ── Symmetry operations ─────────────────────────────────────────────── */
+.sym-layout{display:grid;grid-template-columns:minmax(0,1fr) 268px;gap:24px;align-items:start}
+.op-list{columns:200px;column-gap:22px;font-size:15px;line-height:1.9}
+.op{
+  display:block;width:100%;text-align:left;border:0;background:none;
+  padding:1px 5px;border-radius:2px;break-inside:avoid;
+}
+.op .n{color:var(--faint);font-size:11px;margin-right:6px}
+.op:hover{background:var(--mark-tint)}
+.op.active{background:var(--mark-tint);box-shadow:inset 3px 0 var(--mark)}
+.op-panel{border-top:1px solid var(--ink);padding-top:9px;position:sticky;top:14px}
+.op-panel h4{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);margin:14px 0 5px}
+.op-title{font-size:19px}
+.aug{border-collapse:collapse;font-size:14px;width:auto}
+.aug td{padding:4px 9px;text-align:right;border:0}
+.aug td:nth-child(3){padding-right:11px}
+.aug .tcol{border-left:1px solid var(--rule);color:var(--mark);padding-left:11px}
+.aug tr:first-child td{padding-top:2px}
+
+/* ── Empty and error states ──────────────────────────────────────────── */
+.empty{
+  background:var(--sheet);border-top:1px solid var(--rule);
+  padding:64px 24px;text-align:center;color:var(--dim);
+}
+.empty h2{font-size:19px;color:var(--ink);margin-bottom:5px}
+.empty p{font-size:14px;max-width:44ch;margin:0 auto}
+.empty-mark{font-size:26px;color:var(--rule);margin-bottom:14px}
+.empty.mini{padding:26px 16px;border:0}
+.empty.mini h2{font-size:15px}
+.loading{color:var(--faint);font-size:13px;letter-spacing:.1em;text-transform:uppercase}
+
+/* ── Responsive ──────────────────────────────────────────────────────── */
+@media(max-width:1080px){
+  .filter-grid{grid-template-columns:1fr minmax(190px,1fr) 82px 164px}
+  .bravais-group{grid-column:1/-1}
+  .workspace{grid-template-columns:1fr}
+  .results{position:static;max-height:none}
+  .result-list{max-height:290px}
+  .sym-layout,.inspector{grid-template-columns:1fr}
+  .op-panel{position:static}
+}
+@media(max-width:640px){
+  body{padding-top:14px}
+  .sheet{padding:0 14px}
+  .filter-grid{grid-template-columns:1fr}
+  .head-row{display:block}
+  .head-class{text-align:left;margin-top:6px}
+  .head-symbol{font-size:30px}
+  .tabs{gap:16px;overflow-x:auto}
+}
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+
+/* ── Dark mode: an inked plate rather than a lit page ────────────────── */
+body.dark{
+  color-scheme: dark;
+  --paper:#101216;
+  --sheet:#171a1f;
+  --ink:#e6e5e0;
+  --dim:#9b9ea6;
+  --faint:#71757d;
+  --rule:#3a3e46;
+  --hair:#272b32;
+  --mark:#5486e0;
+  --mark-tint:#1d2531;
+  --absent:#e2818c;
+  --absent-tint:#2c1e21;
+  --present:#77c79c;
+  --present-tint:#18271f;
+}
+body.dark .toggle.active{background:var(--mark);border-color:var(--mark);color:#101216}
+body.dark .verdict.absent{border-color:#4a3237}
+body.dark .verdict.allowed{border-color:#2c4738}
+
+/* ── Print: it should look like the book it borrows from ─────────────── */
+@media print{
+  body{background:#fff;padding:0}
+  .finder,.results,.tabs,.btn{display:none}
+  .workspace{display:block}
+  .page-head,.block{border-color:#000}
+}
+
+/* Rule typography: the disjunctive conditions the tables use for
+   diamond-type special positions, and the caveat when a set cannot be phrased */
+.orword{font-style:italic;color:var(--dim);padding:0 2px}
+.warn{color:var(--amber,#9a5b00);font-size:12px;margin-top:3px}
+.dim{color:var(--faint)}
+body.dark .warn{color:#ffaa33}
