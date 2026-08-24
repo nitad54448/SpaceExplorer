@@ -32,7 +32,7 @@ html,body{
   font-variant-numeric:tabular-nums lining-nums;
   -webkit-text-size-adjust:100%;
 }
-body{padding:22px 0 64px}
+body{padding:12px 0 64px}
 
 .sheet{max-width:var(--measure);margin:0 auto;padding:0 24px}
 
@@ -55,7 +55,7 @@ h1,.section-head h3{
   background:var(--sheet);
   border-radius:2px;
   padding:5px 10px;
-  font-size:13px;
+  font-size:14px;
   line-height:1.2;
 }
 .btn:hover{background:var(--mark-tint);border-color:var(--mark)}

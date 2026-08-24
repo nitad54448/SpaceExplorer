@@ -940,7 +940,7 @@ function wire() {
 
 /* The generator's schema this build was written against. A stale sg/ folder
    used to fail one field at a time and look like a data error; say it once,
-   plainly, and carry on rendering what is there. */
+   plainly, and carry on rendering what is there. removed this warning in version 1.2, schema 14
 const SCHEMA_VERSION = 14;
 
 function checkSchema(v) {
@@ -958,6 +958,8 @@ function checkSchema(v) {
   if (ws && ws.parentNode) ws.parentNode.insertBefore(bar, ws);
 }
 
+*/
+
 async function init() {
   wire();
   
@@ -970,7 +972,7 @@ async function init() {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     state.index = await r.json();
     state.settings = state.index.settings || [];
-    checkSchema(state.index.schema_version);
+    //checkSchema(state.index.schema_version);
     refreshFilterUI();
     applyFilters();
 
