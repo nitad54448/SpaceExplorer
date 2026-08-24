@@ -1,8 +1,8 @@
 # 22 Aug 2026 - adds the data needed to build a STRUCTURE, not just index peaks.
-# this is v4, used for SpaceExplorer
+# this is v8, used for SpaceExplorer
 # CHANGE: one JSON file per SETTING in ./sg/, plus a light index.
 #
-# v4 fixes (all marked "v4:" in the body):
+# v8 fixes (the earlier v4-v7 fixes remain below):
 #   1. Harker sections were also emitted for pure centring translations, whose
 #      rotation is the identity. Those are lattice vectors, not Harker
 #      geometry: C2/c gained three spurious "line" sections. Identity
@@ -1332,20 +1332,136 @@ def _stratum_points(S, L, smaller, zones):
     return out
 
 
-def _fit_site_rules(hold, brk):
+def _rule_literal(var, modulus, residue, negated=False):
+    """Format one modular literal in the compact site-condition grammar."""
+    residue %= modulus
+    rhs = f"{modulus}n" if residue == 0 else f"{modulus}n+{residue}"
+    return f"{var}{'!=' if negated else '='}{rhs}"
+
+
+def _cube_matches(point, cube):
+    """Return True when a Miller-index triple lies inside a modular cube."""
+    for value, item in zip(point, cube):
+        if item is None:
+            continue
+        modulus, residue = item
+        if value % modulus != residue:
+            return False
+    return True
+
+
+def _fit_site_cnf(hold, brk, period):
+    """Exact modular CNF fallback for compact-rule failures.
+
+    The existing JSON grammar is a conjunction of rule strings, where each
+    string is a disjunction of modular clauses.  That is already a CNF
+    language, so no consumer-side grammar change is required.
+
+    For a small-period site predicate, we construct modular "forbidden cubes"
+    containing only absent reflections.  The complement of each cube is one
+    valid disjunctive rule.  Taking the conjunction of those rules gives an
+    exact description of every allowed reflection.
+
+    The exact per-coordinate residue classes are always available at the
+    finest modulus, while divisors of the period provide coarser cubes and
+    therefore shorter rules.  This fallback is deliberately limited to
+    period <= 8; larger cases retain the lossless strata-bitset fallback.
+    """
+    if not brk or not hold or period <= 0 or period > 8:
+        return None
+
+    hold = {tuple(int(v) for v in r) for r in hold}
+    brk = {tuple(int(v) for v in r) for r in brk}
+
+    # A cube is safe when every point it contains is absent.  Its complement
+    # is a clause that every allowed reflection satisfies.
+    divisors = _divisors(period)
+    options = [None] + [(m, r) for m in divisors for r in range(m)]
+
+    cubes = []
+    for cube in itertools.product(options, repeat=3):
+        covered = {r for r in brk if _cube_matches(r, cube)}
+        if not covered:
+            continue
+        if any(_cube_matches(r, cube) for r in hold):
+            continue
+        cubes.append((cube, covered))
+
+    if not cubes:
+        return None
+
+    uncovered = set(brk)
+    picked = []
+    while uncovered:
+        best = None
+        best_gain = set()
+        best_key = None
+        for cube, covered in cubes:
+            gain = covered & uncovered
+            if not gain:
+                continue
+            key = (
+                len(gain),
+                -sum(1 for item in cube if item is not None),
+                -sum(item[0] for item in cube if item is not None),
+                tuple(str(item) for item in cube),
+            )
+            if best is None or key > best_key:
+                best = cube
+                best_gain = gain
+                best_key = key
+        if best is None:
+            return None
+        picked.append(best)
+        uncovered -= best_gain
+
+    clauses = []
+    for cube in picked:
+        literals = []
+        for var, item in zip(LETTERS, cube):
+            if item is None:
+                continue
+            modulus, residue = item
+            # Complement of "var = modulus*n + residue".
+            literals.append(_rule_literal(var, modulus, residue, negated=True))
+        if not literals:
+            return None
+        clauses.append(" or ".join(literals))
+
+    # Independent verification against the complete residue-class sample.
+    rule_fns = [_compile_rule(rule) for rule in clauses]
+    if any(fn is None for fn in rule_fns):
+        return None
+    if not all(all(fn(*r) for fn in rule_fns) for r in hold):
+        return None
+    if any(all(fn(*r) for fn in rule_fns) for r in brk):
+        return None
+    return clauses
+
+
+def _divisors(n):
+    """Positive divisors of n, sorted from coarse to fine."""
+    out = []
+    for d in range(1, int(math.isqrt(n)) + 1):
+        if n % d == 0:
+            out.append(d)
+            if d * d != n:
+                out.append(n // d)
+    return sorted(out)
+
+
+def _fit_site_rules(hold, brk, period=None):
     """Rules holding on every point of `hold` and broken by every point of `brk`.
 
-    Both shapes the tables use are built here out of single clauses. First a
-    conjunction, printed with semicolons: clauses that hold everywhere they must,
-    intersected until every required point is excluded. Then, for whatever the
-    conjunction could not reach, one disjunction printed with "or", assembled by
-    covering `hold` with clauses that no remaining point satisfies. P6(2) 3b needs
-    the second: it is extinct when h and k are both even and l is not a multiple
-    of three, which no conjunction of the vocabulary states but
-    "l=3n or h=2n+1 or k=2n+1" states exactly.
+    The primary fitter uses the compact single-clause vocabulary.  If that
+    vocabulary cannot describe the exact set, a small-period CNF fallback
+    extends the vocabulary with modular residue classes while preserving the
+    same consumer grammar: one condition string is an OR-clause, and the list
+    of strings is ANDed.
 
-    The caller passes one point per residue class over the common period of the
-    predicate and the vocabulary, so agreement here is agreement everywhere.
+    This is important for SG 220 I-43d 12a/12b, whose exact site predicate
+    needs several interacting congruences rather than one of the short
+    presentation rules.
     """
     if not brk:
         return []
@@ -1385,9 +1501,14 @@ def _fit_site_rules(hold, brk):
         picked.append(best)
         uncovered -= gain
         clauses = [c for c in clauses if c[0] != best]
-    if uncovered or not picked:
-        return None
-    return chosen + [" or ".join(sorted(picked, key=lambda s: (len(s), s)))]
+    if not uncovered and picked:
+        return chosen + [" or ".join(sorted(picked, key=lambda s: (len(s), s)))]
+
+    if period is not None:
+        exact_rules = _fit_site_cnf(hold, brk, period)
+        if exact_rules:
+            return chosen + exact_rules
+    return None
 
 
 def _stratum_bitset(S, L, classes):
@@ -1467,7 +1588,7 @@ def site_reflection_conditions(sg, zones, orbit_of, coset_ops,
         if not brk:
             continue
 
-        rules = _fit_site_rules(hold, brk)
+        rules = _fit_site_rules(hold, brk, N)
         if rules:
             out[S["label"]] = rules
             defs[S["label"]] = [list(n) for n in S["normals"]]
@@ -1925,7 +2046,7 @@ def generate_all_space_groups(only=None):
 # 13: site conditions are derived on the strata where the operator grouping is
 #     constant, exactly and without sampling; conditions_exact, when needed at
 #     all, is a strata-bitset rather than one flat bitset over residue classes.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 SG_DIR_NAME = 'sg'
 INDEX_NAME = 'index.json'
 EXPECTED_SETTINGS = 527
