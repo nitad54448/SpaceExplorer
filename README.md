@@ -1,6 +1,6 @@
 # Space Group Explorer
 
-**Space Group Explorer** is a lightweight, zero-dependency web application for inspecting crystallographic space groups, Wyckoff positions, reflection conditions, and symmetry operations across all 527 standard settings.
+**Space Group Explorer** is a lightweight, zero-dependency web application for inspecting crystallographic space groups, Wyckoff positions, reflection conditions, and symmetry operations across all 527 settings.
 
 Data is pre-derived algebraically using [`cctbx`](https://cctbx.github.io/) and pre-compiled into lightweight per-setting JSON files, providing instantaneous client-side navigation and reflection testing.
 
