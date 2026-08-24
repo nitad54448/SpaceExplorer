@@ -34,7 +34,7 @@ html,body{
 }
 body{padding:12px 0 64px}
 
-.sheet{max-width:var(--measure);margin:0 auto;padding:0 24px}
+.sheet{max-width:var(--measure);margin:0 auto;padding:0}
 
 h1,h2,h3,h4{margin:0;font-weight:600;letter-spacing:.005em}
 p{margin:0}
@@ -43,10 +43,11 @@ button{cursor:pointer}
 
 /* ── Section heads: letterspaced small caps, the book's own device ───── */
 h1,.section-head h3{
-  font-size:12px;
+  font-size:18px;
   font-weight:700;
-  letter-spacing:.16em;
+  letter-spacing:.1em;
   text-transform:uppercase;
+  line-height:1;
 }
 
 /* ── Controls ────────────────────────────────────────────────────────── */
@@ -75,7 +76,7 @@ h1,.section-head h3{
 }
 .finder-head{
   display:flex;justify-content:space-between;align-items:center;gap:16px;
-  padding-bottom:4px;margin-bottom:10px;border-bottom:1px solid var(--hair);
+  padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--hair);
 }
 .finder-tools{display:flex;gap:6px}
 
