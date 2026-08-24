@@ -941,7 +941,7 @@ function wire() {
 /* The generator's schema this build was written against. A stale sg/ folder
    used to fail one field at a time and look like a data error; say it once,
    plainly, and carry on rendering what is there. */
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 function checkSchema(v) {
   if (v === SCHEMA_VERSION) return;
