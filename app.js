@@ -173,9 +173,14 @@ const representative = w => (w && (w.coordinate || w.special_op)) || '';
 const bravaisOf = s => s.centering || '?';
 const crystalLabel = v => v ? v.charAt(0).toUpperCase() + v.slice(1) : '—';
 
+/* Absent fields are dropped before the join. An older index carried no
+   standard_symbol, and joining it in anyway put the word "undefined" in every
+   haystack, so any query that was a substring of it matched all 527 settings. */
 function matches(s, q) {
   const hay = [s.symbol, s.hm, s.hall, s.number, s.standard_symbol, s.description,
-    s.setting_id, s.point_group, s.laue_class, s.crystal_system, s.centering].join(' ');
+    s.setting_id, s.point_group, s.laue_class, s.crystal_system, s.centering]
+    .filter(v => v !== undefined && v !== null && v !== '')
+    .join(' ');
   return norm(hay).includes(norm(q));
 }
 
@@ -330,7 +335,9 @@ const TABS = [
   ['symmetry', 'Symmetry operations']
 ];
 
-const ZONE_ORDER = ['hkl', '0kl', 'h0l', 'hk0', 'hhl', 'h-hl', 'h00', '0k0', '00l'];
+const ZONE_ORDER = ['hkl', '0kl', 'h0l', 'hk0', 'hhl', 'h-hl', 'hkh', 'hk-h',
+  'h00', '0k0', '00l'];
+const zoneRank = z => { const i = ZONE_ORDER.indexOf(z); return i < 0 ? 99 : i; };
 
 function renderDetail() {
   const d = state.detail;
@@ -362,7 +369,7 @@ function renderDetail() {
       <div style="margin: 16px 0 0; padding: 12px; border: 1px solid var(--border, #e0e0e0); border-radius: 6px;">
         <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted, #666);">General Reflection Conditions</div>
         ${(Object.entries(d.reflection_conditions || {})).length ? `<table class="cond-table" style="font-size: 14px; width: auto;"><tbody>
-          ${Object.entries(d.reflection_conditions || {}).sort((a, b) => (ZONE_ORDER.indexOf(a[0]) + 99) % 99 - (ZONE_ORDER.indexOf(b[0]) + 99) % 99).map(([z, rules]) => `<tr>
+          ${Object.entries(d.reflection_conditions || {}).sort((a, b) => zoneRank(a[0]) - zoneRank(b[0])).map(([z, rules]) => `<tr>
             <td class="zone" style="padding-right: 16px; font-weight: 600;">${esc(z)}</td>
             <td class="rule-str">${(Array.isArray(rules) ? rules : [rules]).map(fmtRule).join(' ; ')}</td>
           </tr>`).join('')}
@@ -531,10 +538,12 @@ function getEquivalentReflections(h, k, l) {
   const rots = d.rotations || [[1,0,0, 0,1,0, 0,0,1]];
   const eq = [];
   const seen = new Set();
+  // The stored rotations are doubles, so the products are rounded back to the
+  // integers they are: an index must compare exactly against a zone normal.
   rots.forEach(r => {
-    const eh = h * r[0] + k * r[3] + l * r[6];
-    const ek = h * r[1] + k * r[4] + l * r[7];
-    const el = h * r[2] + k * r[5] + l * r[8];
+    const eh = Math.round(h * r[0] + k * r[3] + l * r[6]);
+    const ek = Math.round(h * r[1] + k * r[4] + l * r[7]);
+    const el = Math.round(h * r[2] + k * r[5] + l * r[8]);
     const key = `${eh},${ek},${el}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -544,16 +553,46 @@ function getEquivalentReflections(h, k, l) {
   return eq;
 }
 
-/* Check if a reflection falls into a zone definition, using legacy fallback if needed. */
-function matchesZone(zName, zDef, eh, ek, el) {
-  if (zDef && zDef.normals) {
-    return zDef.normals.every(n => n[0]*eh + n[1]*ek + n[2]*el === 0);
-  }
+/* The normals cutting out a zone, wherever the generator recorded them.
+
+   A Wyckoff position can carry a condition on a zone the space group itself
+   puts no condition on, and such a zone never appears in reflection_zones.
+   zone_defs covers the whole zone universe, so the label can be resolved
+   arithmetically instead of being guessed from its spelling. */
+function zoneNormals(zName) {
+  const d = state.detail || {};
+  const defs = d.zone_defs || {};
+  if (Array.isArray(defs[zName])) return defs[zName];
+  const rec = (d.reflection_zones || []).find(z => z.zone === zName);
+  return (rec && rec.normals) || null;
+}
+
+const LEGACY_ZONES = new Set(ZONE_ORDER);
+
+/* False means "outside the zone"; null means "this label cannot be resolved",
+   which is not the same thing and must not be reported as a passing test. */
+function matchesZone(zName, normals, eh, ek, el) {
+  if (normals) return normals.every(n => n[0] * eh + n[1] * ek + n[2] * el === 0);
+  if (!LEGACY_ZONES.has(zName)) return null;
   return zName === 'hkl' ||
     (zName === '0kl' && eh === 0) || (zName === 'h0l' && ek === 0) || (zName === 'hk0' && el === 0) ||
     (zName === 'hhl' && eh === ek) || (zName === 'h-hl' && eh === -ek) ||
+    (zName === 'hkh' && eh === el) || (zName === 'hk-h' && eh === -el) ||
     (zName === 'h00' && ek === 0 && el === 0) || (zName === '0k0' && eh === 0 && el === 0) ||
     (zName === '00l' && eh === 0 && ek === 0);
+}
+
+/* The equivalent this zone's rule should be read on, or null if none lies in
+   the zone. `unresolved` is set when the zone label could not be resolved at
+   all, so the caller can mark the test undone rather than silently skip it. */
+function equivalentInZone(eqRefls, zName, normals) {
+  let unresolved = false;
+  for (const eq of eqRefls) {
+    const hit = matchesZone(zName, normals, eq[0], eq[1], eq[2]);
+    if (hit === null) { unresolved = true; break; }
+    if (hit) return { eq, unresolved: false };
+  }
+  return { eq: null, unresolved };
 }
 
 
@@ -562,35 +601,67 @@ function matchesZone(zName, zDef, eh, ek, el) {
 
 /* Grammar, matching the generator: clause = <expr in h,k,l> '=' <m>'n' ['+' r],
    and a rule is one or more clauses joined by ' or '. */
+/* true = satisfied, false = broken, null = the rule could not be read.
+
+   Returning true for an unreadable rule, as this used to, prints a green tick
+   against a test that never ran. A rule is a disjunction, so one clause that
+   holds settles it; only when nothing holds and something failed to parse is
+   the verdict withheld. */
 function evaluateRule(h, k, l, rule) {
-  try {
-    return String(rule).split(' or ').some(clause => {
-      const neq = clause.includes('!=');
-      const [lhs, rhs] = clause.split(neq ? '!=' : '=');
-      const m = /^\s*(\d+)n(?:\s*\+\s*(\d+))?\s*$/.exec(rhs || '');
-      if (!m) return true;
-      const mod = +m[1], rem = +(m[2] || 0);
-      const val = Function('h', 'k', 'l', `return ${lhs}`)(h, k, l);
-      const hit = ((((val - rem) % mod) + mod) % mod) === 0;
-      return neq ? !hit : hit;
-    });
-  } catch { return true; }
+  let unparsed = false;
+  for (const clause of String(rule).split(' or ')) {
+    const neq = clause.includes('!=');
+    const [lhs, rhs] = clause.split(neq ? '!=' : '=');
+    const m = /^\s*(\d+)n(?:\s*\+\s*(\d+))?\s*$/.exec(rhs || '');
+    // The left side is data, so it is checked against the generator's grammar
+    // before it is compiled, not merely wrapped in a try.
+    if (!m || +m[1] === 0 || !/^[hkl\d+\-*\s]+$/.test(lhs || '')) { unparsed = true; continue; }
+    const mod = +m[1], rem = +(m[2] || 0);
+    let val;
+    try { val = Function('h', 'k', 'l', `return ${lhs}`)(h, k, l); }
+    catch { unparsed = true; continue; }
+    if (!Number.isFinite(val)) { unparsed = true; continue; }
+    const hit = ((((val - rem) % mod) + mod) % mod) === 0;
+    if (neq ? !hit : hit) return true;
+  }
+  return unparsed ? null : false;
 }
 
 /* Decodes the exact periodic residue bitset for complex Wyckoff positions */
+/* True means the site allows the reflection.
+
+   Two encodings. The flat bitset assumed the site predicate was periodic in
+   each index; it is not. Operators share a phase group when h annihilates a
+   difference of their projected matrices, and that is a lattice condition, not
+   a congruence — in P-4, position 2g is extinct at (1,0,0) and not at (1,0,2),
+   which are the same residue class. The strata encoding states the predicate on
+   each sublattice where the grouping is constant, most special first, so the
+   first stratum containing h is the one that governs it. */
 function evaluateExactCondition(h, k, l, exactData) {
-  if (!exactData || exactData.encoding !== 'base64-bitset') return true;
+  if (!exactData) return true;
+  const mod = (v, m) => ((v % m) + m) % m;
+  const bitAt = (data, i) => {
+    const raw = atob(data);
+    return i >> 3 < raw.length && (raw.charCodeAt(i >> 3) & (1 << (i & 7))) !== 0;
+  };
+
+  if (exactData.encoding === 'strata-bitsets') {
+    for (const s of exactData.strata || []) {
+      if (!(s.normals || []).every(n => n[0] * h + n[1] * k + n[2] * l === 0)) continue;
+      const N = s.modulus || exactData.modulus;
+      let idx = 0;
+      for (let i = 0; i < s.dim; i++) {
+        const c = h * s.duals[0][i] + k * s.duals[1][i] + l * s.duals[2][i];
+        idx = idx * N + mod(c, N);
+      }
+      return !bitAt(s.data, idx);
+    }
+    return true;
+  }
+
+  if (exactData.encoding !== 'base64-bitset') return true;
   const N = exactData.modulus;
-  const mod = (val, m) => ((val % m) + m) % m;
-  const index = (mod(h, N) * N + mod(k, N)) * N + mod(l, N);
-  
-  const raw = atob(exactData.data);
-  const byteIdx = index >> 3;
-  const bitIdx = index & 7;
-  
-  if (byteIdx >= raw.length) return true;
-  const isAbsent = (raw.charCodeAt(byteIdx) & (1 << bitIdx)) !== 0;
-  return !isAbsent;
+  return !bitAt(exactData.data, (mod(h, N) * N + mod(k, N)) * N + mod(l, N));
 }
 
 function tester() {
@@ -601,20 +672,39 @@ function tester() {
   
   const eqRefls = getEquivalentReflections(h, k, l);
 
-  // 1. General reflection conditions
+  // 1. General reflection conditions.
+  //    The zone universe holds one zone per operator kernel, so symmetry-
+  //    equivalent zones each get their own record and the same rule would be
+  //    listed several times. Since every equivalent of hkl is tested anyway,
+  //    one zone per orbit says everything the orbit has to say. Note that this
+  //    cannot dedupe on 'printed': a zone can head an orbit and still be
+  //    unprinted, and dropping it would lose the orbit's rules altogether.
+  const seenOrbit = new Set();
+  const seenRule = new Set();
   (d.reflection_zones || []).forEach(z => {
-    const matchedEq = eqRefls.find(eq => matchesZone(z.zone, z, eq[0], eq[1], eq[2]));
-    if (matchedEq) {
-      (z.rules || []).forEach(rule => {
-        generalChecks.push({ zone: z.zone, rule, ok: evaluateRule(matchedEq[0], matchedEq[1], matchedEq[2], rule) });
-      });
+    const orbit = z.orbit || z.zone;
+    if (seenOrbit.has(orbit)) return;
+    const { eq: matchedEq, unresolved } = equivalentInZone(eqRefls, z.zone, z.normals);
+    if (unresolved) {
+      seenOrbit.add(orbit);
+      (z.rules || []).forEach(rule =>
+        generalChecks.push({ zone: z.zone, rule, ok: null, why: 'zone not resolvable' }));
+      return;
     }
+    if (!matchedEq) return;
+    seenOrbit.add(orbit);
+    (z.rules || []).forEach(rule => {
+      const key = `${z.zone}|${rule}`;
+      if (seenRule.has(key)) return;
+      seenRule.add(key);
+      generalChecks.push({ zone: z.zone, rule, ok: evaluateRule(matchedEq[0], matchedEq[1], matchedEq[2], rule) });
+    });
   });
 
   // Legacy general rules (if file lacks reflection_zones)
   if (!d.reflection_zones || !d.reflection_zones.length) {
     Object.entries(d.reflection_conditions || {}).forEach(([zName, rules]) => {
-      const matchedEq = eqRefls.find(eq => matchesZone(zName, null, eq[0], eq[1], eq[2]));
+      const { eq: matchedEq } = equivalentInZone(eqRefls, zName, zoneNormals(zName));
       if (matchedEq) {
         (Array.isArray(rules) ? rules : [rules]).forEach(rule => {
           generalChecks.push({ zone: zName, rule, ok: evaluateRule(matchedEq[0], matchedEq[1], matchedEq[2], rule) });
@@ -628,15 +718,18 @@ function tester() {
     let siteOk = true;
     let failedRule = '';
     let failedZone = '';
+    let undecided = null;
     
     // Evaluate standard named rules
     if (w.conditions) {
       Object.entries(w.conditions).forEach(([zName, rules]) => {
-        const zDef = (d.reflection_zones || []).find(z => z.zone === zName);
-        const matchedEq = eqRefls.find(eq => matchesZone(zName, zDef, eq[0], eq[1], eq[2]));
+        const { eq: matchedEq, unresolved } = equivalentInZone(eqRefls, zName, zoneNormals(zName));
+        if (unresolved) { undecided = undecided || zName; return; }
         if (matchedEq) {
           (Array.isArray(rules) ? rules : [rules]).forEach(rule => {
-            if (!evaluateRule(matchedEq[0], matchedEq[1], matchedEq[2], rule)) {
+            const verdict = evaluateRule(matchedEq[0], matchedEq[1], matchedEq[2], rule);
+            if (verdict === null) { undecided = undecided || zName; return; }
+            if (verdict === false) {
               siteOk = false;
               failedRule = rule;
               failedZone = zName;
@@ -655,17 +748,26 @@ function tester() {
     
     if (!siteOk) {
       specialChecks.push({ letter: w.letter, mult: w.multiplicity, zone: failedZone, rule: failedRule });
+    } else if (undecided) {
+      specialChecks.push({ letter: w.letter, mult: w.multiplicity, zone: undecided,
+        rule: '', undecided: true });
     }
   });
 
-  const failedGeneral = generalChecks.filter(c => !c.ok);
-  const cls = !generalChecks.length ? '' : failedGeneral.length ? 'absent' : 'allowed';
-  const word = !generalChecks.length ? 'No condition' : failedGeneral.length ? 'Systematically absent' : 'Allowed';
-  const said = !generalChecks.length
+  /* An undecided test is neither a pass nor a failure and is kept out of both
+     counts, so the verdict never rests on a rule that was not read. */
+  const decided = generalChecks.filter(c => c.ok !== null);
+  const failedGeneral = decided.filter(c => c.ok === false);
+  const unknown = generalChecks.length - decided.length;
+  const plural = decided.length === 1 ? '' : 's';
+  const cls = !decided.length ? '' : failedGeneral.length ? 'absent' : 'allowed';
+  const word = !decided.length ? 'No condition' : failedGeneral.length ? 'Systematically absent' : 'Allowed';
+  let said = !decided.length
     ? 'No stored condition covers this zone, so nothing forbids the reflection.'
     : failedGeneral.length
-      ? `Fails ${failedGeneral.length} of ${generalChecks.length} applicable condition${generalChecks.length > 1 ? 's' : ''}.`
-      : `Satisfies all ${generalChecks.length} applicable condition${generalChecks.length > 1 ? 's' : ''}.`;
+      ? `Fails ${failedGeneral.length} of ${decided.length} applicable condition${plural}.`
+      : `Satisfies all ${decided.length} applicable condition${plural}.`;
+  if (unknown) said += ` ${unknown} condition${unknown === 1 ? ' could' : 's could'} not be read; the verdict does not rest on ${unknown === 1 ? 'it' : 'them'}.`;
 
   let html = `<div class="verdict ${cls}">
       <span class="verdict-word">${word}</span>
@@ -673,19 +775,37 @@ function tester() {
     </div>`;
     
   if (generalChecks.length) {
-    html += `<table class="checks"><tbody>${generalChecks.map(c => `<tr>
-      <td class="${c.ok ? 'yes' : 'no'}">${c.ok ? '✓' : '✗'}</td>
+    const mark = c => c.ok === null ? ['warn', '?'] : c.ok ? ['yes', '✓'] : ['no', '✗'];
+    html += `<table class="checks"><tbody>${generalChecks.map(c => {
+      const [k2, glyph] = mark(c);
+      return `<tr>
+      <td class="${k2}">${glyph}</td>
       <td class="zone">${esc(c.zone)}</td>
-      <td class="rule-str">${fmtRule(c.rule)}</td></tr>`).join('')}</tbody></table>`;
+      <td class="rule-str">${fmtRule(c.rule)}${c.why ? ` <span class="hint">(${esc(c.why)})</span>` : ''}</td></tr>`;
+    }).join('')}</tbody></table>`;
   }
   
-  if (specialChecks.length) {
+  const siteAbsent = specialChecks.filter(c => !c.undecided);
+  const siteUnknown = specialChecks.filter(c => c.undecided);
+
+  if (siteAbsent.length) {
     html += `<div style="margin-top: 24px; font-size: 13px;">
       <strong style="color: var(--text-muted, #666);">Note: This reflection is absent for atoms on these specific positions:</strong>
-      <table class="checks" style="margin-top: 8px;"><tbody>${specialChecks.map(c => `<tr>
+      <table class="checks" style="margin-top: 8px;"><tbody>${siteAbsent.map(c => `<tr>
         <td class="no" style="opacity: 0.6;">✗</td>
         <td class="zone">Wyckoff ${c.mult}${c.letter} (${esc(c.zone)})</td>
         <td class="rule-str" style="opacity: 0.8;">${fmtRule(c.rule)}</td>
+      </tr>`).join('')}</tbody></table>
+    </div>`;
+  }
+
+  if (siteUnknown.length) {
+    html += `<div style="margin-top: 16px; font-size: 13px;">
+      <strong style="color: var(--text-muted, #666);">Not tested on these positions:</strong>
+      <table class="checks" style="margin-top: 8px;"><tbody>${siteUnknown.map(c => `<tr>
+        <td class="warn" style="opacity: 0.6;">?</td>
+        <td class="zone">Wyckoff ${c.mult}${c.letter}</td>
+        <td class="rule-str" style="opacity: 0.8;">zone <b>${esc(c.zone)}</b> is not defined in this file; regenerate with the current script to get <code>zone_defs</code></td>
       </tr>`).join('')}</tbody></table>
     </div>`;
   }
@@ -818,6 +938,26 @@ function wire() {
   if (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) $('themeToggle').click();
 }
 
+/* The generator's schema this build was written against. A stale sg/ folder
+   used to fail one field at a time and look like a data error; say it once,
+   plainly, and carry on rendering what is there. */
+const SCHEMA_VERSION = 13;
+
+function checkSchema(v) {
+  if (v === SCHEMA_VERSION) return;
+  const bar = document.createElement('div');
+  bar.className = 'schema-warn';
+  bar.style.cssText = 'margin:0 0 12px;padding:10px 12px;border:1px solid var(--border,#e0e0e0);' +
+    'border-radius:6px;font-size:13px;line-height:1.5';
+  bar.innerHTML = v == null
+    ? `This <code>sg/</code> folder carries no <code>schema_version</code>. It predates
+       <code>zone_defs</code>, so some site conditions cannot be tested. Regenerate it.`
+    : `This <code>sg/</code> folder is schema ${esc(v)}; the page expects ${SCHEMA_VERSION}.
+       Some fields may be missing or read differently. Regenerate with the current script.`;
+  const ws = document.querySelector('.workspace');
+  if (ws && ws.parentNode) ws.parentNode.insertBefore(bar, ws);
+}
+
 async function init() {
   wire();
   
@@ -830,6 +970,7 @@ async function init() {
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     state.index = await r.json();
     state.settings = state.index.settings || [];
+    checkSchema(state.index.schema_version);
     refreshFilterUI();
     applyFilters();
 

@@ -30,6 +30,8 @@ import json
 import os
 import re
 import base64
+import itertools
+import functools
 from collections import OrderedDict, defaultdict
 from cctbx import sgtbx
 from fractions import Fraction
@@ -704,6 +706,12 @@ def exact_reflection_conditions(sg):
     conditions = OrderedDict()
     shown = set()
     zone_records = []
+    # 'printed' answers "does the book state this zone here", which is not the
+    # same question as "have we already tested this orbit": a zone that heads an
+    # orbit but whose label is not among the printed ones is printed=False. A
+    # consumer that deduplicates on 'printed' would then drop that orbit's rules
+    # entirely, so each record also names its orbit head explicitly.
+    label_by_key = {z["key"]: z["label"] for z in zones}
     for z in with_rules:
         head = orbit_of.get(z["key"], z["key"])
         first = head not in shown and z["label"] in rank
@@ -712,11 +720,28 @@ def exact_reflection_conditions(sg):
             conditions[z["label"]] = z["rules"]
         zone_records.append(OrderedDict([
             ("zone", z["label"]),
+            ("orbit", label_by_key.get(head, z["label"])),
             ("normals", z["normals"]),
             ("rules", z["rules"]),
             ("printed", first),
         ]))
     return conditions, zone_records, zones, orbit_of
+
+
+def zone_definitions(zones):
+    """label -> normals, for every zone in the universe.
+
+    A Wyckoff position can carry a condition on a zone that the space group
+    itself puts no condition on. Such a zone never reaches zone_records, so a
+    consumer reading only that list cannot test the site condition and silently
+    ignores it. This map covers the whole universe, so every label appearing in
+    a Wyckoff 'conditions' block can be resolved to an arithmetic membership
+    test rather than to a guess from the label's spelling.
+    """
+    defs = OrderedDict()
+    for z in zones:
+        defs.setdefault(z["label"], z["normals"])
+    return defs
 
 
 def reflection_is_absent(hkl, zone_records):
@@ -915,23 +940,129 @@ _SITE_SINGLE = [
     "-h+k+l=3n", "h-k+l=3n", "h+k+l=3n", "h+k=3n", "h+l=3n", "k+l=3n",
     "h+k+l=6n", "l=6n", "l=3n", "h=3n", "k=3n",
 ]
-_SITE_ODD = ["h=2n+1", "k=2n+1", "l=2n+1", "h+k+l=2n+1"]
-
 # Forms with a coefficient of 2 are needed for the 4(1) axis families: an atom
 # on 4a of I4(1) is present exactly when 2h+l is not 4n+2, which nothing built
 # from h, k, l with unit coefficients can say.
-_SITE_FORMS = ["h", "k", "l", "h+k", "h+l", "k+l", "h+k+l",
-               "2*h+l", "2*k+l", "h+2*l", "k+2*l", "2*h+k", "h+2*k",
-               "2*h+2*k+l", "h+2*k+2*l", "2*h+k+2*l"]
-_SITE_PARTNER = ["h+k+l=4n", "h+k=4n", "h+l=4n", "k+l=4n",
-                 "h=4n", "k=4n", "l=4n", "h+k+l=2n",
-                 "2*h+l=4n", "2*k+l=4n", "h+2*l=4n", "k+2*l=4n",
-                 "2*h+k=4n", "h+2*k=4n"]
+_SITE_FORMS = [
+    "h", "k", "l",
+    "h+k", "h-k", "h+l", "h-l", "k+l", "k-l",
+    "2*h+k", "h+2*k", "2*h-k", "h-2*k",
+    "2*k+l", "k+2*l", "2*k-l", "k-2*l",
+    "2*l+h", "l+2*h", "2*l-h", "l-2*h",
+    "2*l+k", "l+2*k", "2*l-k", "l-2*k",
+    "h+k+l", "-h+k+l", "h-k+l", "h+k-l", "h-k-l", "-h-k+l", "-h+k-l",
+    "2*h+k+l", "h+2*k+l", "h+k+2*l",
+    "2*h-k+l", "2*h+k-l", "h-2*k+l", "h+2*k-l", "h-k+2*l", "h+k-2*l",
+    "2*h-k-l", "h-2*k-l", "h-k-2*l",
+    "2*h+2*k+l", "2*h+k+2*l", "h+2*k+2*l",
+    "2*h+2*k-l", "2*h-k+2*l", "-h+2*k+2*l",
+]
+
+_SITE_ODD = [f"{f}=2n+1" for f in _SITE_FORMS] + \
+            [f"{f}!=3n" for f in _SITE_FORMS]
+
+_SITE_PARTNER = [f"{f}=4n" for f in _SITE_FORMS] + \
+                [f"{f}=2n" for f in _SITE_FORMS] + \
+                [f"{f}=8n" for f in _SITE_FORMS] + \
+                [f"{f}=3n" for f in _SITE_FORMS] + \
+                [f"{f}=6n" for f in _SITE_FORMS]
+
 # "F != 4n+2" is the compact way to write "F odd, or F a multiple of four",
 # which is the shape these positions keep taking.
 _SITE_NEQ = [f"{f}!=4n+2" for f in _SITE_FORMS] + \
-            [f"{f}!=8n+4" for f in ("h+k+l", "2*h+l", "2*k+l", "l")]
+            [f"{f}!=8n+4" for f in _SITE_FORMS] + \
+            [f"{f}=4n+2" for f in _SITE_FORMS]
 _SITE_CANDIDATES = None
+
+
+_SITE_ATOMS = None
+
+
+def site_atomic_rules():
+    """Single and compound disjunctive clauses for site reflection conditions.
+
+    Includes single clauses, two-clause disjunctions (A or B), and 3-fold cyclic
+    disjunctions across cubic axes to cover all ITC special position conditions.
+    """
+    global _SITE_ATOMS
+    if _SITE_ATOMS is None:
+        def cyc(s):
+            return s.replace('h', 'X').replace('k', 'h').replace('l', 'k').replace('X', 'l')
+
+        singles = []
+        for f in _SITE_FORMS:
+            for r in ("=2n", "=2n+1"):
+                singles.append(f"{f}{r}")
+            for r in ("=3n", "=3n+1", "=3n+2", "!=3n"):
+                singles.append(f"{f}{r}")
+            for r in ("=4n", "=4n+1", "=4n+2", "=4n+3", "!=4n+2", "!=4n"):
+                singles.append(f"{f}{r}")
+            for r in ("=6n", "=6n+1", "=6n+2", "=6n+3", "=6n+4", "=6n+5"):
+                singles.append(f"{f}{r}")
+            for r in ("=8n", "=8n+1", "=8n+2", "=8n+3", "=8n+4", "=8n+5", "=8n+6", "=8n+7", "!=8n+4"):
+                singles.append(f"{f}{r}")
+        singles = list(OrderedDict.fromkeys(singles))
+
+        # Parity and zone guard clauses used in ITC disjunctions
+        guards = [
+            "h=2n+1", "k=2n+1", "l=2n+1",
+            "h=2n", "k=2n", "l=2n",
+            "h+k=2n", "h+l=2n", "k+l=2n",
+            "h+k+l=2n", "h+k+l=4n",
+            "h=4n", "k=4n", "l=4n",
+            "h=4n+2", "k=4n+2", "l=4n+2",
+        ]
+
+        compounds = []
+        for g in guards:
+            for s in singles:
+                if g != s and not s.startswith(g + " "):
+                    compounds.append(f"{g} or {s}")
+
+        # Build 3-fold cyclic permutation triples (h -> k -> l -> h)
+        cyclic_triples = []
+        for s in singles:
+            c1 = cyc(s)
+            c2 = cyc(c1)
+            if c1 != s and c2 != s and c1 != c2:
+                cyclic_triples.append(f"{s} or {c1} or {c2}")
+
+        triples = [
+            "h=2n or k=2n or l=2n",
+            "h=2n+1 or k=2n+1 or l=2n+1",
+            "h=4n or k=4n or l=4n",
+            "h=4n+2 or k=4n+2 or l=4n+2",
+            "h+k=4n or k+l=4n or h+l=4n",
+        ] + cyclic_triples
+
+        all_rules = list(OrderedDict.fromkeys(singles + compounds + triples))
+        _SITE_ATOMS = [(n, _compile_rule(n)) for n in all_rules]
+    return _SITE_ATOMS
+
+
+_SITE_MODULUS = None
+
+
+def site_rule_modulus():
+    """The common period of the rule vocabulary.
+
+    Truth is periodic modulo N, but a rule of modulus 3 or 8 is not decided by
+    the residues modulo 2, so comparing them on classes of period N alone lets
+    an accidental agreement through: Pa-3 4a has only two present classes modulo
+    2 and neither has l divisible by three, so "l!=3n" looked like a law. The
+    classes are therefore taken modulo lcm(N, this), on which both sides are
+    exactly periodic and the comparison is a proof rather than a test.
+    """
+    global _SITE_MODULUS
+    if _SITE_MODULUS is None:
+        m = 1
+        for name, _fn in site_atomic_rules():
+            for mod in re.findall(r"(\d+)n", name):
+                v = int(mod)
+                if v:
+                    m = m * v // gcd(m, v)
+        _SITE_MODULUS = m
+    return _SITE_MODULUS
 
 
 def site_candidate_rules():
@@ -1015,13 +1146,19 @@ def _bitset_b64(bits):
     return base64.b64encode(bytes(raw)).decode("ascii")
 
 
-def exact_site_residue_data(N, A_list, w_list, zones):
+def exact_site_residue_data(N, A_list, w_list):
     """Exact machine-readable site extinctions over one complete period.
 
     All quantities entering site_is_absent() are integral modulo N, so the
-    site-extinction predicate is periodic in each Miller index with period N.
-    The bitset contains only reflections that are allowed by the space group;
-    a consumer should apply ordinary space-group reflection conditions first.
+    site-extinction predicate is periodic in each Miller index with period N and
+    the bitset below is a lossless statement of it.
+
+    It records the site predicate alone. Filtering out the reflections the space
+    group already extinguishes, as this once did, is not a well-defined thing to
+    do here: space-group absence depends on which zone a reflection lies in, and
+    that is not a property of its residue class, so the filter would decide a
+    whole class on the accident of one member. A consumer applies the ordinary
+    space-group conditions separately, which is the only correct order anyway.
     """
     total = N * N * N
     bits = [False] * total
@@ -1030,17 +1167,246 @@ def exact_site_residue_data(N, A_list, w_list, zones):
             for l in range(N):
                 if h == 0 and k == 0 and l == 0:
                     continue
-                r = (h, k, l)
-                if reflection_is_absent(r, zones):
-                    continue
-                if site_is_absent(r, N, A_list, w_list):
-                    idx = (h * N + k) * N + l
-                    bits[idx] = True
+                if site_is_absent((h, k, l), N, A_list, w_list):
+                    bits[(h * N + k) * N + l] = True
     return OrderedDict([
         ("encoding", "base64-bitset"),
         ("modulus", N),
         ("index", "((h mod N)*N + (k mod N))*N + (l mod N)"),
-        ("allowed_by_space_group", True),
+        ("allowed_by_space_group", False),
+        ("data", _bitset_b64(bits)),
+    ])
+
+
+SITE_VERIFY_BOX = 6
+
+
+def _site_sample_points(N, zones, box=SITE_VERIFY_BOX):
+    """Reflections to test a site's absences on: one per residue class, per zone,
+    together with an ordinary box of small reflections.
+
+    The site predicate is periodic modulo N, so the residue classes describe it
+    completely. Enumerating those classes as the box [0,N)^3 is not, however, a
+    fair sample of the reflections themselves. Zone membership is not periodic,
+    so a class whose representative happens to carry a zero index sits in a
+    special zone and may be extinguished by the space group, while other members
+    of the same class are ordinary reflections that the site really does
+    extinguish. In Pa-3 the class of (1,1,0) is such a case: the representative
+    dies on hk0 : h = 2n, but (1,1,2) is an allowed reflection which an atom on
+    4a does extinguish, and dropping the class loses the whole F condition.
+
+    So each zone is sampled in its own coordinates, and the representative is
+    lifted by whole periods -- which stays inside the zone and inside the class
+    -- until it is a reflection the space group allows.
+
+    That structured sample still spans only one period, and a rule fitted to one
+    period agrees with it by construction. P-4 2g is extinct exactly when l = 0
+    and h+k is odd; over a sample of period two, "l = 0" and "l even" are the
+    same statement, and the search happily returned the second. Only reflections
+    chosen on some other basis can show that a fit does not generalise, so an
+    ordinary Cartesian box goes in as well.
+    """
+    pts = set()
+    for z in zones:
+        basis, d = z["basis"], z["dim"]
+        for coeffs in itertools.product(range(N), repeat=d):
+            base = [sum(coeffs[i] * basis[i][c] for i in range(d)) for c in range(3)]
+            for shift in itertools.product((0, 1), repeat=d):
+                r = tuple(base[c] + N * sum(shift[i] * basis[i][c] for i in range(d))
+                          for c in range(3))
+                if r == (0, 0, 0) or reflection_is_absent(r, zones):
+                    continue
+                pts.add(r)
+                break                      # one surviving lift per class is enough
+
+    for h in range(-box, box + 1):
+        for k in range(-box, box + 1):
+            for l in range(-box, box + 1):
+                r = (h, k, l)
+                if r == (0, 0, 0) or reflection_is_absent(r, zones):
+                    continue
+                pts.add(r)
+    return sorted(pts)
+
+
+def _kernel_of_normals(normals):
+    """{h : h.n = 0 for every n in normals} as integer basis rows."""
+    if not normals:
+        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    A = [[n[i] for n in normals] for i in range(3)]
+    return integer_kernel_rows(A)
+
+
+def site_strata(A_list):
+    """The sublattices on which the operator grouping is constant, largest first.
+
+    site_is_absent() groups operators by the exact vector h.A_i, so two
+    operators share a phase group precisely when h annihilates A_i - A_j. Every
+    such difference therefore cuts reciprocal space along a sublattice, and the
+    grouping -- with it the whole extinction predicate -- changes as h crosses
+    one.
+
+    This is why a single bitset over the residue classes cannot state a site's
+    absences. In P-4 the position 2g is extinct exactly when l = 0 and h+k is
+    odd; N is 2, and (1,0,0) and (1,0,2) are the same residue class with
+    opposite answers. The predicate is periodic within a stratum and not across
+    strata, so the strata are where the conditions belong -- and they are
+    exactly the zones the tables state special-position conditions on.
+
+    Closed under intersection, so every reflection has a unique smallest
+    stratum containing it.
+    """
+    strata = {}
+    full = zone_from_rows([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    strata[full["key"]] = full
+
+    seeds = []
+    m = len(A_list)
+    for i in range(m):
+        for j in range(i + 1, m):
+            D = [[A_list[i][a][b] - A_list[j][a][b] for b in range(3)]
+                 for a in range(3)]
+            if not any(any(row) for row in D):
+                continue                       # identical: constrains nothing
+            rows = integer_kernel_rows(D)
+            if not rows:
+                continue
+            z = zone_from_rows(rows)
+            if z is not None and z["dim"] < 3 and z["key"] not in strata:
+                strata[z["key"]] = z
+                seeds.append(z)
+
+    frontier = seeds
+    while frontier:
+        nxt = []
+        for a in frontier:
+            for b in list(strata.values()):
+                rows = _kernel_of_normals(a["normals"] + b["normals"])
+                if not rows:
+                    continue
+                z = zone_from_rows(rows)
+                if z is None or z["key"] in strata:
+                    continue
+                strata[z["key"]] = z
+                nxt.append(z)
+        frontier = nxt
+
+    return sorted(strata.values(), key=lambda z: -z["dim"])
+
+
+def _stratum_points(S, L, smaller, zones):
+    """One reflection per residue class of the stratum, generic within it.
+
+    A representative that happens to fall into a smaller stratum would show that
+    stratum's grouping instead of this one's, so it is lifted by whole periods
+    until it is clear of them. A class every one of whose lifts stays inside a
+    smaller stratum is not this stratum's business at all, and is dropped -- the
+    smaller stratum states it.
+
+    Reflections the space group already extinguishes are skipped for the same
+    reason the tables skip them: a special position is listed with the
+    conditions it adds, not with the ones it inherits. Skipping them per class
+    would be wrong -- zone membership is not periodic, so a class can have an
+    extinguished representative and ordinary members -- so it is again the lift
+    that moves, not the class that is dropped.
+    """
+    basis, d = S["basis"], S["dim"]
+    out = []
+    smaller_normals = [z["normals"] for z in smaller]
+    shifts = [(0,) * d] + [s for s in itertools.product((0, 1, 2), repeat=d) if s != (0,) * d]
+
+    for coeffs in itertools.product(range(L), repeat=d):
+        base = [sum(coeffs[i] * basis[i][c] for i in range(d)) for c in range(3)]
+        for shift in shifts:
+            r = (base[0] + L * sum(shift[i] * basis[i][0] for i in range(d)),
+                 base[1] + L * sum(shift[i] * basis[i][1] for i in range(d)),
+                 base[2] + L * sum(shift[i] * basis[i][2] for i in range(d)))
+            if r == (0, 0, 0):
+                continue
+            if any(all(n[0] * r[0] + n[1] * r[1] + n[2] * r[2] == 0 for n in norm) for norm in smaller_normals):
+                continue
+            if reflection_is_absent(r, zones):
+                continue
+            out.append((coeffs, r))
+            break
+    return out
+
+
+def _fit_site_rules(hold, brk):
+    """Rules holding on every point of `hold` and broken by every point of `brk`.
+
+    Both shapes the tables use are built here out of single clauses. First a
+    conjunction, printed with semicolons: clauses that hold everywhere they must,
+    intersected until every required point is excluded. Then, for whatever the
+    conjunction could not reach, one disjunction printed with "or", assembled by
+    covering `hold` with clauses that no remaining point satisfies. P6(2) 3b needs
+    the second: it is extinct when h and k are both even and l is not a multiple
+    of three, which no conjunction of the vocabulary states but
+    "l=3n or h=2n+1 or k=2n+1" states exactly.
+
+    The caller passes one point per residue class over the common period of the
+    predicate and the vocabulary, so agreement here is agreement everywhere.
+    """
+    if not brk:
+        return []
+    atoms = site_atomic_rules()
+
+    holds_all, chosen, remaining = [], [], set(brk)
+    for name, fn in atoms:
+        try:
+            if all(fn(*r) for r in hold):
+                holds_all.append((name, fn))
+        except Exception:
+            pass
+    for name, fn in sorted(holds_all, key=lambda nf: (len(nf[0]), nf[0])):
+        killed = {r for r in remaining if not fn(*r)}
+        if killed:
+            chosen.append(name)
+            remaining -= killed
+            if not remaining:
+                return chosen
+
+    clauses = []
+    for name, fn in atoms:
+        try:
+            if not any(fn(*r) for r in remaining):
+                clauses.append((name, fn))
+        except Exception:
+            pass
+    uncovered, picked = set(hold), []
+    while uncovered and clauses:
+        best, gain = None, set()
+        for name, fn in clauses:
+            g = {r for r in uncovered if fn(*r)}
+            if len(g) > len(gain):
+                best, gain = name, g
+        if not gain:
+            break
+        picked.append(best)
+        uncovered -= gain
+        clauses = [c for c in clauses if c[0] != best]
+    if uncovered or not picked:
+        return None
+    return chosen + [" or ".join(sorted(picked, key=lambda s: (len(s), s)))]
+
+
+def _stratum_bitset(S, L, classes):
+    """The stratum's absence set, exactly, as one bit per residue class."""
+    total = L ** S["dim"]
+    bits = [False] * total
+    for coeffs, absent in classes:
+        if not absent:
+            continue
+        idx = 0
+        for c in coeffs:
+            idx = idx * L + (c % L)
+        bits[idx] = True
+    return OrderedDict([
+        ("modulus", L),
+        ("normals", [list(n) for n in S["normals"]]),
+        ("duals", [list(row) for row in S["duals"]]),
+        ("dim", S["dim"]),
+        ("label", S["label"]),
         ("data", _bitset_b64(bits)),
     ])
 
@@ -1049,124 +1415,108 @@ def site_reflection_conditions(sg, zones, orbit_of, coset_ops,
                                P_num, P_den, T_num, T_den, rng=None):
     """Extra reflection conditions carried by an atom on this position.
 
-    Human-readable rules are searched over one complete site period.  When the
-    exact absence set cannot be expressed by the compact rule grammar, the
-    caller receives an exact periodic residue bitset as a lossless fallback.
+    Derived rather than fitted. The strata below carry the whole of the site's
+    behaviour, the predicate is periodic within each one, and every residue
+    class of every stratum is evaluated -- so the conditions returned are exact,
+    not a fit that happened to survive a box of test reflections.
+
+    Returns (conditions, complete, exact, zone_defs). `exact` is present only
+    where the compact grammar could not name a stratum's absence set, and then
+    it states that stratum exactly.
     """
     N, A_list, w_list = site_absence_machinery(
         sg, coset_ops, P_num, P_den, T_num, T_den)
 
-    # We no longer rely on an arbitrary +/-5 reflection box for correctness.
-    # Every site predicate is periodic modulo N.
-    pts = []
-    absent = {}
-    for h in range(N):
-        for k in range(N):
-            for l in range(N):
-                if h == 0 and k == 0 and l == 0:
-                    continue
-                r = (h, k, l)
-                if reflection_is_absent(r, zones):
-                    continue
-                pts.append(r)
-                absent[r] = site_is_absent(r, N, A_list, w_list)
+    M = site_rule_modulus()
+    L = N * M // gcd(N, M)
 
-    if not pts or not any(absent.values()):
-        return OrderedDict(), True, None
+    strata = site_strata(A_list)
+    table = {}
+    for S in strata:
+        smaller = [z for z in strata if z["dim"] < S["dim"]]
+        pts = _stratum_points(S, L, smaller, zones)
+        table[S["key"]] = [(c, r, site_is_absent(r, N, A_list, w_list))
+                           for c, r in pts]
+
+    if not any(a for rows in table.values() for _c, _r, a in rows):
+        return OrderedDict(), True, None, {}
+
+    def contained(T, S):
+        return all(in_zone(b, S) for b in T["basis"])
 
     out = OrderedDict()
+    defs = {}
     accepted = []
-    shown = set()
+    exact_parts = []
 
-    for z in zones:                              # already sorted largest first
-        head = orbit_of.get(z["key"], z["key"])
-        if head in shown:
-            continue
-        zone_pts = [r for r in pts if in_zone(r, z)]
-        if not zone_pts:
-            continue
-        present = frozenset(r for r in zone_pts if not absent[r])
-        if len(present) == len(zone_pts):
+    for S in strata:                              # largest first
+        rows = table[S["key"]]
+        if not rows:
             continue
 
-        # What accepted conditions on larger zones already predict.
-        pred = frozenset(
-            r for r in zone_pts
-            if all(evaluate_rule(r[0], r[1], r[2], rule)
-                   for zz, rules in accepted if in_zone(r, zz) for rule in rules))
-        if pred == present:
+        # A rule stated here also governs every reflection of every stratum
+        # inside this one, so those are what it must not wrongly forbid.
+        hold = [r for T in strata if contained(T, S)
+                for _c, r, a in table[T["key"]] if not a]
+
+        def already(r):
+            return any(not evaluate_rule(r[0], r[1], r[2], rule)
+                       for zz, rules in accepted if in_zone(r, zz) for rule in rules)
+
+        brk = [r for _c, r, a in rows if a and not already(r)]
+        if not brk:
             continue
 
-        best, chosen, acc = None, [], pred
-        for name, fn in site_candidate_rules():
-            sat = frozenset(r for r in pred if fn(*r))
-            # Never reject a reflection that the site actually produces.
-            if any((r in present) and (r not in sat) for r in pred):
-                continue
-            if sat == pred:
-                continue
-            if sat == present:
-                if best is None or len(name) < len(best):
-                    best = name
-            elif not sat >= acc:
-                chosen.append(name)
-                acc &= sat
+        rules = _fit_site_rules(hold, brk)
+        if rules:
+            out[S["label"]] = rules
+            defs[S["label"]] = [list(n) for n in S["normals"]]
+            accepted.append((S, rules))
+        else:
+            exact_parts.append(_stratum_bitset(S, L, [(c, a) for c, _r, a in rows]))
 
-        rules = [best] if best is not None else (chosen if acc == present else [])
-        if not rules:
-            continue
-        out[z["label"]] = rules
-        accepted.append((z, rules))
-        shown.add(head)
-
-    def predicted(r):
-        return any(in_zone(r, zz) and
-                   not evaluate_rule(r[0], r[1], r[2], rule)
-                   for zz, rules in accepted for rule in rules)
-
-    complete = all(predicted(r) == absent[r] for r in pts)
-    exact_data = None if complete else exact_site_residue_data(
-        N, A_list, w_list, zones)
-    return out, complete, exact_data
-
+    if exact_parts:
+        exact = OrderedDict([
+            ("encoding", "strata-bitsets"),
+            ("modulus", L),
+            ("index", "fold the stratum coordinates c_i = h.duals[:,i] mod N"),
+            # Bits are set only for reflections the space group itself allows,
+            # so a reader applies the general conditions separately, as before.
+            ("allowed_by_space_group", True),
+            ("strata", list(reversed(exact_parts))),   # most special first
+        ])
+        return out, False, exact, defs
+    return out, True, None, defs
 
 def evaluate_rule(h, k, l, rule_str):
     """Evaluates if a reflection satisfies a textual rule safely.
 
-    v4: the grammar is now
+    The grammar is
         clause      := <integer expression in h,k,l> '=' <n>'n' ['+' <r>]
         rule        := clause (' or ' clause)*
     "h+k=2n" reads as before; "h=2n+1 or h+k+l=4n" is the disjunctive form the
-    tables use for the diamond-type special positions, which could not be
-    written down at all before.
+    tables use for the diamond-type special positions.
+
+    Each distinct rule is compiled once and kept. This used to re-run a regular
+    expression and an eval() per reflection per rule, which the verification
+    boxes call millions of times; the rules themselves number in the hundreds.
+    A rule that will not parse is false, as before, rather than an exception.
     """
-    try:
-        for clause in str(rule_str).split(" or "):
-            if _clause_holds(h, k, l, clause):
-                return True
+    fn = _compiled_rule(str(rule_str))
+    if fn is None:
         return False
+    try:
+        return bool(fn(h, k, l))
     except Exception:
         return False
 
 
-def _clause_holds(h, k, l, clause):
-    negated = "!=" in clause
-    if negated:
-        lhs, rhs = clause.split("!=", 1)
-    elif "=" in clause:
-        lhs, rhs = clause.split("=", 1)
-    else:
-        return False
-    m = re.fullmatch(r"\s*(\d+)n\s*(?:\+\s*(\d+)\s*)?", rhs)
-    if not m:
-        return False
-    mod = int(m.group(1))
-    rem = int(m.group(2) or 0)
-    if mod <= 0:
-        return False
-    lhs_val = eval(lhs, {}, {'h': h, 'k': k, 'l': l})
-    hit = (lhs_val - rem) % mod == 0
-    return (not hit) if negated else hit
+@functools.lru_cache(maxsize=None)
+def _compiled_rule(rule_str):
+    try:
+        return _compile_rule(rule_str)
+    except Exception:
+        return None
 
 
 def _compile_rule(rule_str):
@@ -1280,10 +1630,14 @@ def get_wyckoff_table(sg_info, zone_records=None, zones=None, orbit_of=None):
         # carry nothing extra, so it is not worth the work.
         if exact and ops and zones is not None and entry.get("n_free", 3) < 3:
             try:
-                cond, named, exact_site = site_reflection_conditions(
+                cond, named, exact_site, site_defs = site_reflection_conditions(
                     sg, zones, orbit_of, ops, p_num, p_den, t_num, t_den)
                 if cond:
                     entry["conditions"] = cond
+                if site_defs:
+                    # A stratum need not be one of the group's own zones, so its
+                    # normals travel with the position or the app cannot test it.
+                    entry["condition_zones"] = site_defs
                 if exact_site is not None:
                     entry["conditions_named"] = False
                     entry["conditions_exact"] = exact_site
@@ -1468,6 +1822,7 @@ def generate_all_space_groups(only=None):
 
             conditions, zone_records, zone_universe_, orbit_of = \
                 exact_reflection_conditions(sg_info.group())
+            zone_defs = zone_definitions(zone_universe_)
 
             # The conditions were derived from the operators; cctbx decides
             # absence independently. If the two ever disagree the derivation is
@@ -1497,6 +1852,13 @@ def generate_all_space_groups(only=None):
             try:
                 wyckoff = get_wyckoff_table(sg_info, zone_records,
                                             zone_universe_, orbit_of)
+                # A site condition can sit on a stratum that is not one of the
+                # group's own zones. Its normals go into zone_defs so a reader
+                # can decide membership arithmetically instead of guessing from
+                # the label.
+                for w in wyckoff:
+                    for label, normals in (w.pop("condition_zones", None) or {}).items():
+                        zone_defs.setdefault(label, normals)
             except Exception as e:
                 _warn_once("wyckoff", e)
                 wyckoff = []
@@ -1529,6 +1891,7 @@ def generate_all_space_groups(only=None):
                 "hall": hall,
                 "reflection_conditions": conditions,
                 "reflection_zones": zone_records,
+                "zone_defs": zone_defs,
                 "harker_sections": harker_data,
                 "rotations": rotations,
                 # --- NEW in v7 ---
@@ -1553,7 +1916,16 @@ def generate_all_space_groups(only=None):
     return all_data
 
 
-SCHEMA_VERSION = 10
+# 11: settings carry zone_defs, zone records name their orbit, the index entry
+#     carries standard_symbol, and space_groups[n]["settings"] holds setting
+#     numbers rather than a second copy of every entry.
+# 12: site conditions are derived from a sample that is fair across zones, and
+#     conditions_exact is now the site predicate alone (allowed_by_space_group
+#     is false), so a consumer applies the space-group conditions separately.
+# 13: site conditions are derived on the strata where the operator grouping is
+#     constant, exactly and without sampling; conditions_exact, when needed at
+#     all, is a strata-bitset rather than one flat bitset over residue classes.
+SCHEMA_VERSION = 13
 SG_DIR_NAME = 'sg'
 INDEX_NAME = 'index.json'
 EXPECTED_SETTINGS = 527
@@ -1631,6 +2003,7 @@ def write_split_database(sorted_data, out_dir, pretty=False):
             ("laue_class", entry.get("laue_class", "")),
             ("centrosymmetric", entry["centrosymmetric"]),
             ("chiral", entry.get("chiral", False)),
+            # setting_number values, to be looked up in index["settings"].
             ("settings", [])
         ])
 
@@ -1664,6 +2037,7 @@ def write_split_database(sorted_data, out_dir, pretty=False):
                 ("order_p", setting.get("order_p", 0)),
                 ("reflection_conditions", setting.get("reflection_conditions", {})),
                 ("reflection_zones", setting.get("reflection_zones", [])),
+                ("zone_defs", setting.get("zone_defs", {})),
                 ("wyckoff", wyckoff),
                 ("harker_sections", setting.get("harker_sections", [])),
                 ("rotations", setting.get("rotations", [])),
@@ -1684,6 +2058,11 @@ def write_split_database(sorted_data, out_dir, pretty=False):
                 ("setting_id", setting_payload["setting_id"]),
                 ("setting_number", setting_no),
                 ("number", entry["number"]),
+                # The app searches this field. Leaving it out of the index does
+                # not merely lose a search key: joining an absent field into a
+                # haystack string yields the text "undefined", which then
+                # matches any query that is a substring of that word.
+                ("standard_symbol", entry["standard_symbol"]),
                 ("symbol", setting["symbol"]),
                 ("hm", setting.get("hm", setting["symbol"])),
                 ("description", setting["description"]),
@@ -1698,7 +2077,9 @@ def write_split_database(sorted_data, out_dir, pretty=False):
                 ("file", f"{SG_DIR_NAME}/{filename}"),
             ])
             index["settings"].append(idx_entry)
-            group_index[num]["settings"].append(idx_entry)
+            # Only the setting numbers: the entries themselves are already in
+            # index["settings"], and repeating each one here doubled the file.
+            group_index[num]["settings"].append(setting_no)
 
     index["setting_count"] = setting_no
     index["space_groups"] = group_index
@@ -1716,6 +2097,119 @@ def write_split_database(sorted_data, out_dir, pretty=False):
           f"largest {biggest[0]} at {biggest[1]/1024:.0f} KB")
     print(f"  index {os.path.getsize(index_path)/1024:.0f} KB ({INDEX_NAME})")
     return sg_dir
+
+
+def _machinery_from_data(ops, coset_ops, P_num, P_den, T_num, T_den):
+    """site_absence_machinery() rebuilt from the written record alone.
+
+    Deliberately reads sym_ops / coset_ops / the projector out of the payload
+    rather than asking cctbx again, so the check below tests what was actually
+    serialised. A position whose stored operators no longer reproduce its stored
+    conditions is caught here, not by a reader months later.
+    """
+    P = _rational_matrix(P_num, P_den)
+    T = [Fraction(int(T_num[i]), int(T_den)) for i in range(3)]
+
+    N = 1
+    mats, shifts = [], []
+    for i in coset_ops:
+        op = ops[i]
+        R = op["r"]
+        t = [Fraction(int(v), int(op["t_den"])) for v in op["t_num"]]
+        RP = [[sum(Fraction(R[3 * a + c]) * P[c][b] for c in range(3)) for b in range(3)]
+              for a in range(3)]
+        w = [sum(Fraction(R[3 * a + c]) * T[c] for c in range(3)) + t[a] for a in range(3)]
+        mats.append(RP)
+        shifts.append(w)
+        for row in RP:
+            for v in row:
+                N = N * v.denominator // gcd(N, v.denominator)
+        for v in w:
+            N = N * v.denominator // gcd(N, v.denominator)
+
+    A_list = [[[int(RP[a][b] * N) for b in range(3)] for a in range(3)] for RP in mats]
+    w_list = [[int(v * N) for v in w] for w in shifts]
+    return N, A_list, w_list
+
+
+def check_site_conditions(setting, rng=SITE_VERIFY_BOX + 2):
+    """Do a position's stated conditions match what its orbit actually does?
+
+    site_is_absent() is exact, so every compact rule the generator emits can be
+    held against it. The box below is an ordinary Cartesian one, chosen because
+    it is *not* the sample the derivation used: a rule fitted to a biased sample
+    agrees with that sample by construction, and only an independent set of
+    reflections can expose it. Pa-3 4a is the case in point -- it failed at
+    (1,1,2), well inside this box, while reporting itself complete.
+
+    Positions carrying conditions_exact are skipped: their bitset is the exact
+    predicate, and their compact rules are presentation-only by declaration.
+    """
+    ops = setting.get("sym_ops") or []
+    zone_records = setting.get("reflection_zones") or []
+    zone_defs = setting.get("zone_defs") or {}
+    if not ops:
+        return []
+
+    def normals_for(label):
+        if label in zone_defs:
+            return zone_defs[label]
+        for z in zone_records:
+            if z["zone"] == label:
+                return z["normals"]
+        return None
+
+    bad = []
+    for w in setting.get("wyckoff") or []:
+        cond = w.get("conditions")
+        if not cond or w.get("conditions_named") is False:
+            continue
+        if "coset_ops" not in w or "P_num" not in w:
+            continue
+        if w.get("coset_exact") is False:
+            continue
+
+        zones_used = {}
+        for label in cond:
+            n = normals_for(label)
+            if n is None:
+                bad.append((w["multiplicity"], w["letter"], "unresolvable zone", label))
+                break
+            zones_used[label] = n
+        else:
+            try:
+                N, A_list, w_list = _machinery_from_data(
+                    ops, w["coset_ops"], w["P_num"], w["P_den"],
+                    w["T_num"], w["T_den"])
+            except Exception as e:
+                bad.append((w["multiplicity"], w["letter"], "machinery failed", str(e)))
+                continue
+
+            for h in range(-rng, rng + 1):
+                for k in range(-rng, rng + 1):
+                    for l in range(-rng, rng + 1):
+                        r = (h, k, l)
+                        if r == (0, 0, 0) or reflection_is_absent(r, zone_records):
+                            continue
+                        said = False
+                        for label, rules in cond.items():
+                            if not all(n[0] * h + n[1] * k + n[2] * l == 0
+                                       for n in zones_used[label]):
+                                continue
+                            if any(not evaluate_rule(h, k, l, rule) for rule in rules):
+                                said = True
+                                break
+                        if said != site_is_absent(r, N, A_list, w_list):
+                            bad.append((w["multiplicity"], w["letter"],
+                                        "wrongly absent" if said else "absence missed", r))
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    continue
+                break
+    return bad
 
 
 def verify(sorted_data):
@@ -1785,6 +2279,7 @@ def verify(sorted_data):
 
     unnamed = []
     exact_fallbacks = 0
+    site_bad = []
     for num, entry in sorted_data.items():
         for setting in entry["settings"]:
             for w in setting.get("wyckoff") or []:
@@ -1793,12 +2288,28 @@ def verify(sorted_data):
                                    f"{w['multiplicity']}{w['letter']}")
                     if "conditions_exact" in w:
                         exact_fallbacks += 1
+            for mult, letter, why, detail in check_site_conditions(setting):
+                site_bad.append(f"SG {num} {setting['symbol']} "
+                                f"{mult}{letter}: {why} at {detail}")
+
+    if site_bad:
+        print(f"\n[!!] {len(site_bad)} position(s) whose stated site conditions do "
+              f"not match their own orbit:")
+        for s in site_bad[:10]:
+            print(f"     {s}")
+        if len(site_bad) > 10:
+            print(f"     ... and {len(site_bad) - 10} more")
+        print("     This is a bug in the derivation. Do not publish this data.")
+    else:
+        print("Site conditions reproduce the exact structure-factor calculation "
+              "on every position that claims a compact rule.")
+
     if unnamed:
         print(f"\n[i] {len(unnamed)} special position(s) whose exact site absences "
               f"could not be reduced to the compact rule grammar.")
         print("    These positions carry an exact periodic residue bitset in "
               "'conditions_exact'; the compact 'conditions' remain presentation-only.")
-        for u in unnamed[:10]:
+        for u in unnamed:
             print(f"     {u}")
         if exact_fallbacks:
             print(f"    Exact periodic fallback present for {exact_fallbacks} position(s).")
