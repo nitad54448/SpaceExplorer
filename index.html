@@ -8,10 +8,13 @@
 </head>
 <body>
 <main class="sheet">
+  <noscript><p class="note">JavaScript is required to load and explore the space-group data.</p></noscript>
+  <p id="appStatus" class="note" role="status">Loading the space-group index… If this persists, check that app.js is available.</p>
+  <p id="dataNotice" class="note" role="status"></p>
 
   <section class="finder" aria-labelledby="finderHead">
     <div class="finder-head">
-      <h1 id="finderHead">Space Group Explorer - 1.2</h1>
+      <h1 id="finderHead">Space Group Explorer - 1.3</h1>
       <div class="finder-tools">
         <button id="themeToggle" class="btn icon" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">☾</button>
         <button id="clearFilters" class="btn" type="button">Clear all</button>
@@ -25,11 +28,12 @@
         <div id="crystal" class="toggle-row" role="group" aria-labelledby="csLabel"></div>
       </div>
       <div class="filter-group bravais-group">
-        <div class="filter-label" id="blLabel">Bravais lattice</div>
+        <div class="filter-label" id="blLabel">Lattice centring</div>
         <div id="bravais" class="toggle-row" role="group" aria-labelledby="blLabel"></div>
       </div>
       <label class="field number-field">Number
-        <input id="number" type="number" inputmode="numeric" min="1" max="230" step="1" placeholder="1–230" autocomplete="off">
+        <input id="number" type="number" inputmode="numeric" min="1" max="230" step="1" placeholder="1–230" autocomplete="off" aria-describedby="numberError">
+        <span id="numberError" class="warn" role="status"></span>
       </label>
       <label class="field search-field">Search
         <input id="search" type="search" placeholder="Pbnm, P n m a, Hall…" autocomplete="off">
@@ -41,10 +45,10 @@
 
   <div class="workspace">
     <aside class="results" aria-label="Matching settings">
-      <div class="results-head">Settings <span id="resultCount">0</span></div>
+      <div class="results-head">Settings <span id="resultCount" role="status" aria-live="polite">0</span></div>
       <div id="resultList" class="result-list"></div>
     </aside>
-    <section class="detail" id="detail" aria-live="polite">
+    <section class="detail" id="detail" aria-label="Selected space-group setting">
       <div class="empty">
         <p class="empty-mark">◊</p>
         <h2>No setting selected</h2>
