@@ -184,15 +184,34 @@ const representative = w => (w && (w.coordinate || w.special_op)) || '';
 const bravaisOf = s => s.centering || '?';
 const crystalLabel = v => v ? v.charAt(0).toUpperCase() + v.slice(1) : '—';
 
-/* Absent fields are dropped before the join. An older index carried no
-   standard_symbol, and joining it in anyway put the word "undefined" in every
-   haystack, so any query that was a substring of it matched all 527 settings. */
-function matches(s, q) {
-  const hay = [s.symbol, s.hm, s.hall, s.number, s.standard_symbol, s.description,
-    s.setting_id, s.point_group, s.laue_class, s.crystal_system, s.centering]
+function searchRank(s, q) {
+  const query = norm(q);
+  if (!query) return 0;
+
+  const values = fields => fields
     .filter(v => v !== undefined && v !== null && v !== '')
-    .join(' ');
-  return norm(hay).includes(norm(q));
+    .map(norm);
+
+  const symbols = values([s.symbol, s.hm]);
+  const aliases = values([s.standard_symbol]);
+  const other = values([
+    s.hall, s.number, s.description, s.setting_id,
+    s.point_group, s.laue_class, s.crystal_system, s.centering
+  ]);
+
+  if (symbols.some(v => v === query)) return 0;
+  if (aliases.some(v => v === query)) return 1;
+  if (other.some(v => v === query)) return 2;
+  if (symbols.some(v => v.startsWith(query))) return 3;
+  if (aliases.some(v => v.startsWith(query))) return 4;
+  if (symbols.some(v => v.includes(query))) return 5;
+  if (aliases.some(v => v.includes(query))) return 6;
+  if (other.some(v => v.includes(query))) return 7;
+  return Infinity;
+}
+
+function matches(s, q) {
+  return Number.isFinite(searchRank(s, q));
 }
 
 function currentFilters() {
@@ -255,6 +274,16 @@ function refreshFilterUI() {
 function applyFilters() {
   const f = currentFilters();
   state.filtered = filterSettings();
+    if (norm(f.q)) {
+    state.filtered = state.filtered
+      .map((setting, index) => ({
+        setting,
+        index,
+        rank: searchRank(setting, f.q)
+      }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(item => item.setting);
+  }
   $('resultCount').textContent = state.filtered.length;
   $('activeFilters').innerHTML = [
     f.q ? `Search: ${esc(f.q)}` : '',
